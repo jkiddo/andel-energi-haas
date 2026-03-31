@@ -1,0 +1,1016 @@
+openapi: "3.0.3"
+info:
+  title: Andel Energi API
+  description: |
+    Unofficial API specification for api.andelenergi.dk, reverse-engineered from
+    the Andel Energi web app (HAR capture) and Android app v1.33.1 (jadx decompilation).
+
+    Two API path prefixes exist:
+    - `/service/web/` — used by the web app at andelenergi.dk/min-side
+    - `/service/app/` — used by the Android/iOS apps, includes widget endpoints
+
+    Both share the same authentication backend (AWS Cognito). The web login flow
+    (`/service/web/v1/auth/login`) produces tokens accepted by both prefixes.
+  version: "0.1.0"
+  contact:
+    name: jkiddo
+    url: https://github.com/jkiddo/andel-energi-haas
+
+servers:
+  - url: https://api.andelenergi.dk
+    description: Production
+
+security:
+  - bearerAuth: []
+    csrfToken: []
+    idToken: []
+
+tags:
+  - name: Authentication
+    description: Login, token refresh, and CSRF management
+  - name: Addresses
+    description: User addresses and metering points
+  - name: Consumption
+    description: Energy consumption data (web API)
+  - name: Widgets
+    description: Real-time price and green energy widgets (app API)
+  - name: Production
+    description: Solar/energy production data (app API)
+  - name: CO2
+    description: CO2 and energy source distribution (app API)
+
+paths:
+  # ============================================================
+  # Authentication
+  # ============================================================
+  /service/web/v1/csrf:
+    get:
+      operationId: getCsrfToken
+      tags: [Authentication]
+      summary: Get a CSRF nonce
+      description: |
+        Must be called before any POST/PUT/PATCH/DELETE request.
+        The nonce is sent as `X-CSRF-Token` header on subsequent requests.
+        Successful responses may also return an updated CSRF token in the
+        `X-CSRF-Token` response header.
+      security: []
+      responses:
+        "200":
+          description: CSRF nonce
+          headers:
+            X-CSRF-Token:
+              schema:
+                type: string
+              description: Updated CSRF token (may differ from body nonce)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [nonce]
+                properties:
+                  nonce:
+                    type: string
+                    example: "qSgKPYwZNBDI..."
+
+  /service/web/v1/auth/login:
+    post:
+      operationId: login
+      tags: [Authentication]
+      summary: Authenticate with email and password
+      description: |
+        Returns JWT tokens (access_token, id_token, refresh_token) issued by
+        AWS Cognito (User Pool eu-west-1_9N7NXa1h6, Client 1g3k5u0ars04vrt2fcmrogmc1o).
+        Tokens are used in all subsequent requests.
+      security:
+        - csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+                password:
+                  type: string
+                  format: password
+      responses:
+        "200":
+          description: Authenticated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid credentials
+        "403":
+          description: Forbidden
+
+  /service/web/v1/auth/refresh:
+    post:
+      operationId: refreshTokens
+      tags: [Authentication]
+      summary: Refresh session tokens
+      description: |
+        Refreshes the current session. Requires an active session (cookies).
+        The web app sends platform "Website"; the mobile app sends "App".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [platform]
+              properties:
+                platform:
+                  type: string
+                  enum: [Website, App, CustomerService]
+                  example: Website
+      responses:
+        "200":
+          description: Tokens refreshed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Session expired — full login required
+
+  /service/web/v1/auth/logout:
+    post:
+      operationId: logout
+      tags: [Authentication]
+      summary: End the current session
+      responses:
+        "200":
+          description: Logged out
+
+  # ============================================================
+  # Addresses
+  # ============================================================
+  /service/web/v1/addresses:
+    get:
+      operationId: getAddresses
+      tags: [Addresses]
+      summary: List addresses and metering points
+      description: |
+        Returns all addresses associated with the authenticated user,
+        each containing one or more delivery/metering points.
+      responses:
+        "200":
+          description: List of addresses
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Address"
+
+  # ============================================================
+  # Consumption (Web API)
+  # ============================================================
+  /service/web/v3/consumption/{meteringPointId}:
+    get:
+      operationId: getConsumption
+      tags: [Consumption]
+      summary: Get consumption data
+      description: |
+        Returns consumption readings for a metering point at the specified
+        aggregation level. Data is typically delayed 1-3 days.
+      parameters:
+        - $ref: "#/components/parameters/meteringPointId"
+        - name: aggregation
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [hour, day, week, month]
+            default: hour
+        - name: unit
+          in: query
+          schema:
+            type: string
+            enum: [kWh, DKK]
+            default: kWh
+        - name: commodity
+          in: query
+          schema:
+            type: string
+            enum: [power, gas]
+            default: power
+        - name: compare
+          in: query
+          schema:
+            type: string
+            enum: ["true", "false"]
+            default: "false"
+      responses:
+        "200":
+          description: Consumption data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsumptionResponse"
+
+  /service/web/v3/consumption/{meteringPointId}/aggregate:
+    get:
+      operationId: getConsumptionAggregate
+      tags: [Consumption]
+      summary: Drill into a different aggregation level
+      description: |
+        Changes the aggregation level for a given date range.
+        For example, drill from monthly view into daily, or from daily into hourly.
+      parameters:
+        - $ref: "#/components/parameters/meteringPointId"
+        - name: current_aggregation
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [hour, day, week, month]
+        - name: new_aggregation
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [hour, day, week, month]
+        - name: current_date_time
+          in: query
+          required: true
+          description: ISO 8601 datetime of the period to drill into
+          schema:
+            type: string
+            format: date-time
+        - name: unit
+          in: query
+          schema:
+            type: string
+            enum: [kWh, DKK]
+            default: kWh
+        - name: commodity
+          in: query
+          schema:
+            type: string
+            enum: [power, gas]
+            default: power
+        - name: compare
+          in: query
+          schema:
+            type: string
+            enum: ["true", "false"]
+            default: "false"
+      responses:
+        "200":
+          description: Consumption data at new aggregation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsumptionResponse"
+
+  /service/web/v3/consumption/{meteringPointId}/change-unit:
+    get:
+      operationId: getConsumptionChangeUnit
+      tags: [Consumption]
+      summary: Get consumption in a different unit
+      description: Switch between kWh and DKK for an existing view.
+      parameters:
+        - $ref: "#/components/parameters/meteringPointId"
+        - name: aggregation
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [hour, day, week, month]
+        - name: unit
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [kWh, DKK]
+        - name: commodity
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [power, gas]
+        - name: current_date_time
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: compare
+          in: query
+          schema:
+            type: string
+            enum: ["true", "false"]
+            default: "false"
+      responses:
+        "200":
+          description: Consumption data in the requested unit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsumptionResponse"
+
+  # ============================================================
+  # Widgets (App API)
+  # ============================================================
+  /service/app/v1/widgets/current-price/{meteringPointId}:
+    get:
+      operationId: getCurrentPrice
+      tags: [Widgets]
+      summary: Get current electricity spot price
+      parameters:
+        - $ref: "#/components/parameters/meteringPointId"
+      responses:
+        "200":
+          description: Current price
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CurrentPrice"
+
+  /service/app/v1/widgets/current-price/{meteringPointId}/full:
+    get:
+      operationId: getCurrentPriceFull
+      tags: [Widgets]
+      summary: Get full hourly price forecast
+      description: |
+        Returns a list of price items for each hour, including whether each
+        period is the current one. Useful for price forecasting.
+      parameters:
+        - $ref: "#/components/parameters/meteringPointId"
+        - name: aggregation
+          in: query
+          schema:
+            type: string
+            enum: [hour, day]
+            default: hour
+      responses:
+        "200":
+          description: Full price data with forecast
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PriceFullResponse"
+
+  /service/app/v1/widgets/current-green-percentage/{meteringPointId}:
+    get:
+      operationId: getCurrentGreenPercentage
+      tags: [Widgets]
+      summary: Get current renewable energy percentage
+      parameters:
+        - $ref: "#/components/parameters/meteringPointId"
+      responses:
+        "200":
+          description: Current green energy percentage
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CurrentGreenPercentage"
+
+  /service/app/v1/widgets/current-green-percentage/{meteringPointId}/full:
+    get:
+      operationId: getCurrentGreenPercentageFull
+      tags: [Widgets]
+      summary: Get full hourly green energy data
+      parameters:
+        - $ref: "#/components/parameters/meteringPointId"
+      responses:
+        "200":
+          description: Full green energy data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GreenEnergyFullResponse"
+
+  /service/app/v1/widgets/current-combined/{meteringPointId}:
+    get:
+      operationId: getCombinedWidget
+      tags: [Widgets]
+      summary: Get current price and green energy in one call
+      description: |
+        Most efficient endpoint — returns both current electricity price and
+        green energy percentage in a single request.
+      parameters:
+        - $ref: "#/components/parameters/meteringPointId"
+      responses:
+        "200":
+          description: Combined widget data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  currentPrice:
+                    $ref: "#/components/schemas/CurrentPrice"
+                  currentGreenPercentage:
+                    $ref: "#/components/schemas/CurrentGreenPercentage"
+
+  # ============================================================
+  # Production (App API)
+  # ============================================================
+  /service/app/v1/production/page/{meteringPointId}:
+    get:
+      operationId: getProductionPage
+      tags: [Production]
+      summary: Get production page (solar/generation data)
+      description: |
+        Returns energy production data for customers with solar panels
+        or other generation equipment.
+      parameters:
+        - $ref: "#/components/parameters/meteringPointId"
+      responses:
+        "200":
+          description: Production data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductionPageResponse"
+
+  /service/app/v1/production/{meteringPointId}:
+    get:
+      operationId: getProduction
+      tags: [Production]
+      summary: Get paginated production data
+      parameters:
+        - $ref: "#/components/parameters/meteringPointId"
+        - name: aggregation
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [hour, day, week, month, quarter, year]
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: Paginated production data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductionPageResponse"
+
+  /service/app/v1/production/aggregate/{meteringPointId}:
+    get:
+      operationId: getProductionAggregate
+      tags: [Production]
+      summary: Drill into production data at a different aggregation
+      parameters:
+        - $ref: "#/components/parameters/meteringPointId"
+        - name: current_aggregation
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: new_aggregation
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: current_date_time
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Production data at new aggregation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductionPageResponse"
+
+  # ============================================================
+  # CO2 & Energy Distribution (App API)
+  # ============================================================
+  /service/app/v1/co2-and-energy-distribution/page/{meteringPointId}:
+    get:
+      operationId: getCo2AndEnergyDistribution
+      tags: [CO2]
+      summary: Get CO2 emissions and energy source distribution
+      description: |
+        Returns the energy source mix (wind, solar, coal, gas, nuclear, etc.)
+        and CO2 emission data for the grid area of the metering point.
+      parameters:
+        - $ref: "#/components/parameters/meteringPointId"
+      responses:
+        "200":
+          description: CO2 and energy distribution data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Co2DistributionResponse"
+
+  # ============================================================
+  # Additional Web Endpoints (documented but not used by integration)
+  # ============================================================
+  /service/web/v1/consumption/page/{meteringPointId}:
+    get:
+      operationId: getConsumptionPage
+      tags: [Consumption]
+      summary: Get consumption page content and metadata
+      parameters:
+        - $ref: "#/components/parameters/meteringPointId"
+      responses:
+        "200":
+          description: Consumption page with CMS content and widget data
+
+  /service/web/v1/agreements/page/{uniqueAddressId}:
+    get:
+      operationId: getAgreementsPage
+      tags: [Addresses]
+      summary: Get agreement details for an address
+      parameters:
+        - name: uniqueAddressId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Agreement details
+
+  /service/web/v1/payment/billing/page/{uniqueAddressId}:
+    get:
+      operationId: getBillingPage
+      tags: [Addresses]
+      summary: Get billing/payment information
+      parameters:
+        - name: uniqueAddressId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Billing page data
+
+  /service/web/v1/documents/page:
+    get:
+      operationId: getDocumentsPage
+      tags: [Addresses]
+      summary: Get user documents (invoices, contracts)
+      responses:
+        "200":
+          description: Documents list
+
+  /service/app/v1/consumption/ev-sessions/{meteringPointId}/page:
+    get:
+      operationId: getEvSessions
+      tags: [Consumption]
+      summary: Get EV charging session history
+      description: Discovered from Android app. Returns EV charging session details.
+      parameters:
+        - $ref: "#/components/parameters/meteringPointId"
+        - name: location
+          in: query
+          schema:
+            type: string
+        - name: start
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: ev_unit_type
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: EV charging sessions
+
+  /service/app/v1/price/page/{meteringPointId}:
+    get:
+      operationId: getPricePage
+      tags: [Widgets]
+      summary: Get detailed price page with historical data
+      parameters:
+        - $ref: "#/components/parameters/meteringPointId"
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: aggregation
+          in: query
+          schema:
+            type: string
+            enum: [hour, day, week, month]
+        - name: include_forecast
+          in: query
+          schema:
+            type: boolean
+        - name: start_from_cheapest_period
+          in: query
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Price page with historical and forecast data
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: AWS Cognito access_token from /auth/login
+    csrfToken:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+      description: CSRF nonce from /csrf endpoint
+    idToken:
+      type: apiKey
+      in: header
+      name: IdToken
+      description: AWS Cognito id_token from /auth/login
+
+  parameters:
+    meteringPointId:
+      name: meteringPointId
+      in: path
+      required: true
+      description: |
+        The 18-digit metering point ID (EAN). Obtained from the
+        /addresses endpoint under deliveries[].metering_point_id.
+      schema:
+        type: string
+        example: "571313134802906416"
+
+  schemas:
+    AuthResponse:
+      type: object
+      properties:
+        id_token:
+          type: string
+          description: AWS Cognito ID token (JWT)
+        access_token:
+          type: string
+          description: AWS Cognito access token (JWT)
+        refresh_token:
+          type: string
+          description: AWS Cognito refresh token (encrypted JWT)
+        person_id:
+          type: string
+          format: uuid
+          example: d45d0a7e-eb72-4c31-8048-a31455564d36
+        first_name:
+          type: string
+          example: Uffe Gregers
+        last_name:
+          type: string
+          example: Villadsen
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+          example: "20334004"
+        is_upcoming_customer:
+          type: boolean
+
+    Address:
+      type: object
+      properties:
+        unique_id:
+          type: string
+          description: SHA-256 hash identifying the address
+          example: 9D012E83CC7365F4F596E818BA9AE2E6500A7ACFE0F27252D8654C9DB0C5FDFD
+        display_address:
+          type: string
+          example: "Molsvej 38, 6950 Ringkøbing"
+        city:
+          type: string
+        postal_code:
+          type: string
+        street:
+          type: string
+        deliveries:
+          type: array
+          items:
+            $ref: "#/components/schemas/Delivery"
+        has_multiple_same_commodity:
+          type: boolean
+        has_gas_service:
+          type: boolean
+        has_power:
+          type: boolean
+        has_gas:
+          type: boolean
+        has_power_production:
+          type: boolean
+
+    Delivery:
+      type: object
+      properties:
+        metering_point_id:
+          type: string
+          description: 18-digit EAN number
+          example: "571313134802906416"
+        commodity:
+          type: string
+          enum: [PowerSupply, GasSupply]
+        origin_system:
+          type: string
+          enum: [SAP]
+        has_active_relocation:
+          type: boolean
+        is_primary:
+          type: boolean
+        reading_interval:
+          type: string
+          nullable: true
+        reading_interval_change_date:
+          type: string
+          nullable: true
+        quarter_hourly_prices_enabled:
+          type: boolean
+
+    ConsumptionResponse:
+      type: object
+      properties:
+        start:
+          type: string
+          format: date-time
+          description: Start of the data window
+        previous:
+          $ref: "#/components/schemas/DateRange"
+        next:
+          $ref: "#/components/schemas/DateRange"
+        readings:
+          type: array
+          items:
+            $ref: "#/components/schemas/Reading"
+
+    DateRange:
+      type: object
+      nullable: true
+      properties:
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+
+    Reading:
+      type: object
+      properties:
+        value:
+          type: number
+          format: double
+          nullable: true
+          description: Consumption value in the requested unit
+          example: 2.16
+        expected_value:
+          type: number
+          nullable: true
+        previous_value:
+          type: number
+          nullable: true
+        date_time:
+          type: string
+          format: date-time
+          description: Start of the reading period
+          example: "2026-02-11T00:00:00+01:00"
+        end_date_time:
+          type: string
+          format: date-time
+          description: End of the reading period
+        x_axis_label:
+          type: string
+          example: "00.00"
+        header_text:
+          type: string
+          example: "Kl 0.00-1.00 onsdag den 11. februar brugte du"
+        date_label:
+          type: string
+        comparison_text:
+          type: string
+          nullable: true
+        reference_line_label:
+          type: string
+          nullable: true
+        compare_result:
+          type: string
+          nullable: true
+        reading_quality:
+          type: string
+          enum: [Uncertain, Valid, Estimated]
+        breakdown_items:
+          type: array
+          nullable: true
+          items:
+            type: object
+        no_data_label:
+          type: string
+          nullable: true
+
+    CurrentPrice:
+      type: object
+      description: Current electricity spot price (from app widget API)
+      properties:
+        buttonText:
+          type: string
+        currency:
+          type: string
+          example: "kr."
+        text:
+          type: string
+          example: "Pris pr. kWh lige nu"
+        time:
+          type: string
+          example: "Kl. 12-13"
+        valueWithTransportAndTaxes:
+          type: string
+          description: Price including transport and taxes
+          example: "2,47"
+        valueWithoutTransportAndTaxes:
+          type: string
+          description: Spot price only
+          example: "0,83"
+
+    CurrentGreenPercentage:
+      type: object
+      description: Current renewable energy percentage in the grid
+      properties:
+        buttonText:
+          type: string
+        currency:
+          type: string
+        text:
+          type: string
+          example: "Grøn energi i elnettet lige nu"
+        time:
+          type: string
+          example: "Kl. 12-13"
+        value:
+          type: string
+          description: Percentage as formatted string
+          example: "62%"
+
+    PriceFullResponse:
+      type: object
+      properties:
+        timePrefix:
+          type: string
+        text:
+          type: string
+        noDataText:
+          type: string
+        currency:
+          type: string
+        buttonText:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PriceItem"
+
+    PriceItem:
+      type: object
+      properties:
+        time:
+          type: string
+          example: "Kl. 12-13"
+        valueWithTransportAndTaxes:
+          type: string
+          example: "2,47"
+        valueWithoutTransportAndTaxes:
+          type: string
+          example: "0,83"
+        isCurrentTimePeriod:
+          type: boolean
+        startDate:
+          type: string
+          format: date-time
+        endDate:
+          type: string
+          format: date-time
+
+    GreenEnergyFullResponse:
+      type: object
+      properties:
+        timePrefix:
+          type: string
+        text:
+          type: string
+        noDataText:
+          type: string
+        currency:
+          type: string
+        buttonText:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/GreenEnergyItem"
+
+    GreenEnergyItem:
+      type: object
+      properties:
+        time:
+          type: string
+          example: "Kl. 12-13"
+        value:
+          type: string
+          example: "62%"
+        isCurrentTimePeriod:
+          type: boolean
+        startDate:
+          type: string
+          format: date-time
+        endDate:
+          type: string
+          format: date-time
+
+    ProductionPageResponse:
+      type: object
+      description: Solar/energy production data
+      properties:
+        resolutions:
+          type: object
+        filter:
+          type: object
+        labels:
+          type: object
+        items:
+          type: array
+          items:
+            type: object
+            description: Production data points (structure mirrors Reading)
+        previous:
+          $ref: "#/components/schemas/DateRange"
+        next:
+          $ref: "#/components/schemas/DateRange"
+        scrollToIndex:
+          type: integer
+          nullable: true
+        aggregation:
+          type: string
+          enum: [hour, day, week, month, quarter, year]
+
+    Co2DistributionResponse:
+      type: object
+      description: CO2 and energy source distribution
+      properties:
+        maximumCost:
+          type: number
+          format: double
+        scrollToIndex:
+          type: integer
+        showPriceToggle:
+          type: boolean
+        whatIsClimateFriendlyPage:
+          type: object
+          description: Educational content about climate-friendly energy
+        labels:
+          type: object
+          description: UI labels for the CO2 display
+        energyTypes:
+          type: object
+          description: Names for energy source types (wind, solar, etc.)
+        distribution:
+          type: array
+          description: Time-series of energy source distribution
+          items:
+            type: object
+            properties:
+              date_time:
+                type: string
+                format: date-time
+              sources:
+                type: object
+                description: Key-value pairs of energy source percentages
+        bannerItems:
+          type: array
+          items:
+            type: object
