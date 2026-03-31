@@ -1,6 +1,6 @@
 """API client for Andel Energi."""
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 
 import requests
 
@@ -33,6 +33,7 @@ class AndelEnergiApi:
         self._csrf_token: str | None = None
         self._access_token: str | None = None
         self._id_token: str | None = None
+        self._timeout = 30
 
     def close(self):
         """Close the underlying HTTP session."""
@@ -49,9 +50,13 @@ class AndelEnergiApi:
             headers["IdToken"] = self._id_token
         self._session.headers.update(headers)
 
-    def _refresh_csrf(self):
-        """Fetch a fresh CSRF nonce."""
-        resp = self._session.get(f"{API_BASE_URL}/v1/csrf")
+    def _ensure_csrf(self):
+        """Fetch a CSRF nonce if we don't have one."""
+        if self._csrf_token:
+            return
+        resp = self._session.get(
+            f"{API_BASE_URL}/v1/csrf", timeout=self._timeout
+        )
         resp.raise_for_status()
         self._csrf_token = resp.json()["nonce"]
         if "X-CSRF-Token" in resp.headers:
@@ -63,10 +68,10 @@ class AndelEnergiApi:
             self._csrf_token = resp.headers["X-CSRF-Token"]
 
     def _authenticate(self, url: str, body: dict) -> dict:
-        """Shared logic for login and refresh: POST to auth endpoint, store tokens."""
-        self._refresh_csrf()
+        """POST to auth endpoint, store tokens. Fetches CSRF if needed."""
+        self._ensure_csrf()
         self._apply_auth_headers()
-        resp = self._session.post(url, json=body)
+        resp = self._session.post(url, json=body, timeout=self._timeout)
         if resp.status_code in (401, 403):
             raise AndelEnergiAuthError("Invalid email or password")
         resp.raise_for_status()
@@ -96,11 +101,11 @@ class AndelEnergiApi:
 
     def _get(self, url: str, params: dict | None = None) -> requests.Response:
         """Make an authenticated GET request with automatic retry on 401."""
-        resp = self._session.get(url, params=params)
+        resp = self._session.get(url, params=params, timeout=self._timeout)
         self._update_csrf_from_response(resp)
         if resp.status_code == 401:
             self.refresh_tokens()
-            resp = self._session.get(url, params=params)
+            resp = self._session.get(url, params=params, timeout=self._timeout)
             self._update_csrf_from_response(resp)
         resp.raise_for_status()
         return resp

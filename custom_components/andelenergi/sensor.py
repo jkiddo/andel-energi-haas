@@ -8,7 +8,6 @@ from homeassistant.components.recorder.statistics import (
     DOMAIN as RECORDER_DOMAIN,
     async_import_statistics,
     get_last_statistics,
-    statistics_during_period,
 )
 from homeassistant.components.recorder.models import (
     StatisticData,
@@ -21,12 +20,22 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorStateClass,
 )
-from homeassistant.util import dt as dt_util
-
-from .__init__ import HassAndelEnergi, MIN_TIME_BETWEEN_UPDATES
+from .__init__ import HassAndelEnergi
 from .const import DOMAIN, CURRENCY_DKK_PER_KWH
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _parse_numeric(value) -> float | None:
+    """Parse a numeric value from the API, handling locale strings like '2,47' or '62%'."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value).replace("%", "").replace(",", ".").strip())
+    except (ValueError, TypeError):
+        return None
 
 
 async def async_setup_entry(
@@ -98,7 +107,7 @@ class AndelEnergiCurrentPrice(SensorEntity):
     """
 
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = "DKK/kWh"
+    _attr_native_unit_of_measurement = CURRENCY_DKK_PER_KWH
     _attr_icon = "mdi:currency-usd"
     _attr_suggested_display_precision = 2
 
@@ -107,52 +116,49 @@ class AndelEnergiCurrentPrice(SensorEntity):
         self._attr_name = "Andel Energi Current Price"
         self._attr_unique_id = f"{client.metering_point}-current-price"
         self._attr_native_value = None
+        self._cached_attrs: dict = {}
 
     @property
     def extra_state_attributes(self):
-        attrs = {}
-        price = self._data.current_price
-        if price:
-            attrs["price_with_transport_and_taxes"] = price.get(
-                "valueWithTransportAndTaxes"
-            )
-            attrs["price_without_transport_and_taxes"] = price.get(
-                "valueWithoutTransportAndTaxes"
-            )
-            attrs["currency"] = price.get("currency")
-            attrs["time"] = price.get("time")
-            attrs["text"] = price.get("text")
-
-        # Include hourly price forecast if available
-        forecast = self._data.price_forecast
-        if forecast:
-            attrs["forecast"] = [
-                {
-                    "time": item.get("time"),
-                    "price_with_taxes": item.get("valueWithTransportAndTaxes"),
-                    "price_without_taxes": item.get(
-                        "valueWithoutTransportAndTaxes"
-                    ),
-                    "start": item.get("startDate"),
-                    "end": item.get("endDate"),
-                    "is_current": item.get("isCurrentTimePeriod", False),
-                }
-                for item in forecast
-            ]
-        return attrs
+        return self._cached_attrs
 
     def update(self):
         self._data.update_widgets()
         price = self._data.current_price
         if price:
-            try:
-                self._attr_native_value = float(
-                    price.get("valueWithTransportAndTaxes", "").replace(",", ".")
-                )
-            except (ValueError, AttributeError):
-                self._attr_native_value = None
+            self._attr_native_value = _parse_numeric(
+                price.get("valueWithTransportAndTaxes")
+            )
+            attrs = {
+                "price_with_transport_and_taxes": price.get(
+                    "valueWithTransportAndTaxes"
+                ),
+                "price_without_transport_and_taxes": price.get(
+                    "valueWithoutTransportAndTaxes"
+                ),
+                "currency": price.get("currency"),
+                "time": price.get("time"),
+                "text": price.get("text"),
+            }
+            forecast = self._data.price_forecast
+            if forecast:
+                attrs["forecast"] = [
+                    {
+                        "time": item.get("time"),
+                        "price_with_taxes": item.get("valueWithTransportAndTaxes"),
+                        "price_without_taxes": item.get(
+                            "valueWithoutTransportAndTaxes"
+                        ),
+                        "start": item.get("startDate"),
+                        "end": item.get("endDate"),
+                        "is_current": item.get("isCurrentTimePeriod", False),
+                    }
+                    for item in forecast
+                ]
+            self._cached_attrs = attrs
         else:
             self._attr_native_value = None
+            self._cached_attrs = {}
 
 
 class AndelEnergiGreenEnergy(SensorEntity):
@@ -185,11 +191,7 @@ class AndelEnergiGreenEnergy(SensorEntity):
         self._data.update_widgets()
         green = self._data.green_percentage
         if green:
-            try:
-                raw = green.get("value", "").replace("%", "").replace(",", ".").strip()
-                self._attr_native_value = float(raw)
-            except (ValueError, AttributeError):
-                self._attr_native_value = None
+            self._attr_native_value = _parse_numeric(green.get("value"))
         else:
             self._attr_native_value = None
 
@@ -197,32 +199,26 @@ class AndelEnergiGreenEnergy(SensorEntity):
 class AndelEnergiStatistic(SensorEntity):
     """Imports hourly consumption as long-term statistics for the Energy Dashboard.
 
-    Handles late-arriving data (up to BACKFILL_DAYS) by re-importing a rolling
-    window of recent statistics on every update. async_import_statistics upserts,
-    so re-importing existing data points is safe.
+    Appends new readings that are newer than the last imported statistic.
+    Checks every hour so late-arriving data (delayed up to ~5 days) gets
+    picked up as soon as the API makes it available.
     """
 
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
-    BACKFILL_DAYS = 7
-
     def __init__(self, client: HassAndelEnergi):
         self._attr_name = "Andel Energi Statistic"
         self._attr_unique_id = f"{client.metering_point}-statistic"
         self._client = client
         self._attr_native_value = 0
-        self._last_update = None
 
     async def async_will_remove_from_hass(self) -> None:
         await get_instance(self.hass).async_clear_statistics([self.entity_id])
 
     async def async_update(self):
-        now = dt_util.utcnow()
-        if self._last_update and now - self._last_update < MIN_TIME_BETWEEN_UPDATES:
-            return
-
+        # update_consumption is @Throttle-guarded; safe to call from every sensor
         await self.hass.async_add_executor_job(self._client.update_consumption)
 
         readings = self._client.hourly_readings
@@ -230,17 +226,15 @@ class AndelEnergiStatistic(SensorEntity):
             _LOGGER.debug("No hourly data available from Andel Energi")
             return
 
-        await self._insert_statistics(readings)
+        last_stat = await self._get_last_stat(self.hass)
+        await self._insert_statistics(readings, last_stat)
         self._last_update = now
 
-    async def _insert_statistics(self, readings: list[dict]):
-        # Find the cumulative sum just before our backfill window so we can
-        # rebuild the running total from that point forward.
-        backfill_start = dt_util.utcnow() - timedelta(days=self.BACKFILL_DAYS)
-        baseline_sum = await self._get_sum_at(self.hass, backfill_start)
+    async def _insert_statistics(self, readings: list[dict], last_stat):
+        total = last_stat["sum"] if last_stat else 0
+        last_ts = last_stat["start"] if last_stat else 0
 
         statistics: list[StatisticData] = []
-        total = baseline_sum
 
         for reading in sorted(readings, key=lambda r: r["date_time"]):
             value = reading.get("value")
@@ -248,8 +242,8 @@ class AndelEnergiStatistic(SensorEntity):
                 continue
 
             start = datetime.fromisoformat(reading["date_time"])
-            # Only process readings within the backfill window
-            if start < backfill_start:
+            # Only append readings newer than what we've already imported
+            if start.timestamp() <= last_ts:
                 continue
 
             total += value
@@ -267,40 +261,19 @@ class AndelEnergiStatistic(SensorEntity):
         if statistics:
             async_import_statistics(self.hass, metadata, statistics)
             self._attr_native_value = total
+            _LOGGER.debug(
+                "Imported %d new hourly statistics (last: %s, sum: %.3f)",
+                len(statistics),
+                statistics[-1].start,
+                total,
+            )
         else:
             _LOGGER.debug("No new statistics to import from Andel Energi")
 
-    async def _get_sum_at(self, hass: HomeAssistant, at: datetime) -> float:
-        """Get the cumulative sum just before 'at', or 0 if no stats exist."""
-        # Get the last stat recorded before the backfill window
+    async def _get_last_stat(self, hass: HomeAssistant):
         last_stats = await get_instance(hass).async_add_executor_job(
             get_last_statistics, hass, 1, self.entity_id, True, {"sum"}
         )
-
-        if self.entity_id not in last_stats or not last_stats[self.entity_id]:
-            return 0
-
-        # If the most recent stat is before the backfill window, use its sum
-        last = last_stats[self.entity_id][0]
-        last_start = datetime.fromtimestamp(last["start"], tz=timezone.utc)
-        if last_start < at:
-            return last["sum"]
-
-        # Otherwise, query for stats during a window ending at backfill_start
-        # to find the baseline sum
-        period_start = at - timedelta(days=365)
-        period_stats = await get_instance(hass).async_add_executor_job(
-            statistics_during_period,
-            hass,
-            period_start,
-            at,
-            {self.entity_id},
-            "hour",
-            None,
-            {"sum"},
-        )
-
-        if self.entity_id in period_stats and period_stats[self.entity_id]:
-            return period_stats[self.entity_id][-1]["sum"]
-
-        return 0
+        if self.entity_id in last_stats and last_stats[self.entity_id]:
+            return last_stats[self.entity_id][0]
+        return None

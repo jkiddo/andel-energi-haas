@@ -1,8 +1,9 @@
 """The Andel Energi integration."""
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from homeassistant.util import Throttle
+from homeassistant.util import dt as dt_util
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
@@ -178,38 +179,21 @@ class HassAndelEnergi:
         The API's direct aggregation=hour returns a stale default window
         (can be weeks old). The /aggregate endpoint anchored to today
         returns ~25 days of hourly data including the freshest available
-        readings — the browser screenshot confirms hourly data is available
-        even when daily totals haven't caught up yet.
+        readings.
         """
-        now = datetime.now(tz=timezone.utc).astimezone()
-
         try:
             hourly = self._api.get_consumption_for_date(
                 self._metering_point,
-                date=now,
+                date=dt_util.now(),
                 target_aggregation="hour",
                 source_aggregation="day",
-            )
-            readings = [
-                r for r in hourly.get("readings", [])
-                if r.get("value") is not None
-            ]
-            if readings:
-                return readings
-        except Exception:
-            _LOGGER.debug("Could not fetch hourly drill-down from today")
-
-        # Fallback to the direct call
-        try:
-            hourly = self._api.get_consumption(
-                self._metering_point, aggregation="hour"
             )
             return [
                 r for r in hourly.get("readings", [])
                 if r.get("value") is not None
             ]
         except Exception:
-            _LOGGER.exception("Failed to fetch hourly data")
+            _LOGGER.warning("Failed to fetch hourly consumption data")
             return []
 
     MIN_TIME_BETWEEN_WIDGET_UPDATES = timedelta(minutes=15)

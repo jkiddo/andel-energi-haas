@@ -3,6 +3,7 @@
   "name": "Andel Energi",
   "version": "0.1.0",
   "config_flow": true,
+  "iot_class": "cloud_polling",
   "documentation": "https://github.com/jkiddo/andel-energi-haas",
   "issue_tracker": "https://github.com/jkiddo/andel-energi-haas/issues",
   "requirements": [
