@@ -1,0 +1,20 @@
+{
+  "domain": "andelenergi",
+  "name": "Andel Energi",
+  "version": "0.1.0",
+  "config_flow": true,
+  "documentation": "https://github.com/jkiddo/andel-energi-haas",
+  "issue_tracker": "https://github.com/jkiddo/andel-energi-haas/issues",
+  "requirements": [
+    "requests>=2.28.0"
+  ],
+  "ssdp": [],
+  "zeroconf": [],
+  "homekit": {},
+  "dependencies": [
+    "recorder"
+  ],
+  "codeowners": [
+    "@jkiddo"
+  ]
+}

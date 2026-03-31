@@ -1,0 +1,30 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Andel Energi Login",
+        "description": "Log ind med dine andelenergi.dk oplysninger.",
+        "data": {
+          "email": "Email",
+          "password": "Adgangskode"
+        }
+      },
+      "metering_point": {
+        "title": "Vælg målepunkt",
+        "description": "Der blev fundet flere målepunkter. Vælg hvilket der skal tilføjes.",
+        "data": {
+          "metering_point": "Målepunkt"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Kunne ikke oprette forbindelse til Andel Energi",
+      "invalid_auth": "Forkert email eller adgangskode",
+      "no_metering_points": "Ingen målepunkter fundet for denne konto",
+      "unknown": "Uventet fejl"
+    },
+    "abort": {
+      "already_configured": "Dette målepunkt er allerede konfigureret"
+    }
+  }
+}

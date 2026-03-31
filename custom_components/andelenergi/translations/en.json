@@ -1,0 +1,30 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Andel Energi Login",
+        "description": "Log in with your andelenergi.dk credentials.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      },
+      "metering_point": {
+        "title": "Select metering point",
+        "description": "Multiple metering points found. Select which one to add.",
+        "data": {
+          "metering_point": "Metering Point"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to Andel Energi",
+      "invalid_auth": "Invalid email or password",
+      "no_metering_points": "No metering points found for this account",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "This metering point is already configured"
+    }
+  }
+}
