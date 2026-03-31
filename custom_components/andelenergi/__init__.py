@@ -1,6 +1,6 @@
 """The Andel Energi integration."""
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from homeassistant.util import Throttle
 from homeassistant.config_entries import ConfigEntry
@@ -125,13 +125,6 @@ class HassAndelEnergi:
         """Fetch consumption data from Andel Energi."""
         _LOGGER.debug("Fetching consumption data from Andel Energi")
         try:
-            hourly = self._api.get_consumption(
-                self._metering_point, aggregation="hour"
-            )
-            self._hourly_data = [
-                r for r in hourly.get("readings", []) if r.get("value") is not None
-            ]
-
             daily = self._api.get_consumption(
                 self._metering_point, aggregation="day"
             )
@@ -141,6 +134,12 @@ class HassAndelEnergi:
                 self._metering_point, aggregation="month"
             )
             self._monthly_data = monthly.get("readings", [])
+
+            # Fetch hourly data by drilling down from the most recent day that
+            # has data.  The direct aggregation=hour call returns a default
+            # window that can be weeks stale; the /aggregate endpoint lets us
+            # target a specific date — matching how the web UI works.
+            self._hourly_data = self._fetch_recent_hourly()
 
             # Pre-compute attribute dicts so extra_state_attributes doesn't re-filter
             recent_daily = [
@@ -172,6 +171,46 @@ class HassAndelEnergi:
             _LOGGER.exception("Error fetching consumption data from Andel Energi")
 
         _LOGGER.debug("Done fetching consumption data from Andel Energi")
+
+    def _fetch_recent_hourly(self) -> list[dict]:
+        """Fetch hourly data by drilling down from today's date.
+
+        The API's direct aggregation=hour returns a stale default window
+        (can be weeks old). The /aggregate endpoint anchored to today
+        returns ~25 days of hourly data including the freshest available
+        readings — the browser screenshot confirms hourly data is available
+        even when daily totals haven't caught up yet.
+        """
+        now = datetime.now(tz=timezone.utc).astimezone()
+
+        try:
+            hourly = self._api.get_consumption_for_date(
+                self._metering_point,
+                date=now,
+                target_aggregation="hour",
+                source_aggregation="day",
+            )
+            readings = [
+                r for r in hourly.get("readings", [])
+                if r.get("value") is not None
+            ]
+            if readings:
+                return readings
+        except Exception:
+            _LOGGER.debug("Could not fetch hourly drill-down from today")
+
+        # Fallback to the direct call
+        try:
+            hourly = self._api.get_consumption(
+                self._metering_point, aggregation="hour"
+            )
+            return [
+                r for r in hourly.get("readings", [])
+                if r.get("value") is not None
+            ]
+        except Exception:
+            _LOGGER.exception("Failed to fetch hourly data")
+            return []
 
     MIN_TIME_BETWEEN_WIDGET_UPDATES = timedelta(minutes=15)
 

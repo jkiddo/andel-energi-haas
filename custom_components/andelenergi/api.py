@@ -1,5 +1,6 @@
 """API client for Andel Energi."""
 import logging
+from datetime import datetime, timezone
 
 import requests
 
@@ -123,6 +124,33 @@ class AndelEnergiApi:
                 "compare": "false",
                 "unit": unit,
                 "commodity": commodity,
+            },
+        ).json()
+
+    def get_consumption_for_date(
+        self,
+        metering_point_id: str,
+        date: datetime,
+        target_aggregation: str = "hour",
+        source_aggregation: str = "day",
+        unit: str = "kWh",
+        commodity: str = "power",
+    ) -> dict:
+        """Get consumption at a specific aggregation by drilling down from a date.
+
+        The v3 API returns a default window for direct aggregation calls which
+        can be weeks old for hourly data. This method uses the /aggregate
+        endpoint to drill into a specific date, mimicking how the web UI works.
+        """
+        return self._get(
+            f"{API_BASE_URL}/v3/consumption/{metering_point_id}/aggregate",
+            params={
+                "compare": "false",
+                "unit": unit,
+                "commodity": commodity,
+                "current_aggregation": source_aggregation,
+                "new_aggregation": target_aggregation,
+                "current_date_time": date.isoformat(),
             },
         ).json()
 
