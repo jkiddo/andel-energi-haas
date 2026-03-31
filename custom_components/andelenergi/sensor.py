@@ -96,7 +96,6 @@ class AndelEnergiCurrentPrice(SensorEntity):
     Returns price with and without transport & taxes.
     """
 
-    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = CURRENCY_DKK_PER_KWH
     _attr_icon = "mdi:currency-usd"
 
@@ -203,7 +202,7 @@ class AndelEnergiStatistic(SensorEntity):
         self._attr_name = "Andel Energi Statistic"
         self._attr_unique_id = f"{client.metering_point}-statistic"
         self._client = client
-        self._attr_native_value = None
+        self._attr_native_value = 0
         self._last_update = None
 
     async def async_will_remove_from_hass(self) -> None:
