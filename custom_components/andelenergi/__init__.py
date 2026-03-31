@@ -182,9 +182,12 @@ class HassAndelEnergi:
         readings.
         """
         try:
+            # Anchor at the start of tomorrow so the API's ~7-day window
+            # begins at a day boundary, avoiding a truncated first day.
+            anchor = dt_util.start_of_local_day() + timedelta(days=1)
             hourly = self._api.get_consumption_for_date(
                 self._metering_point,
-                date=dt_util.now(),
+                date=anchor,
                 target_aggregation="hour",
                 source_aggregation="day",
             )
