@@ -1,5 +1,5 @@
 """Platform for Andel Energi sensor integration."""
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 import logging
 
 from homeassistant.const import UnitOfEnergy, PERCENTAGE
@@ -204,15 +204,17 @@ class AndelEnergiStatistic(SensorEntity):
     picked up as soon as the API makes it available.
     """
 
+    # No state_class — statistics are imported exclusively via async_import_statistics.
+    # Setting state_class would cause the recorder to ALSO auto-track the entity state,
+    # creating conflicting statistics entries (spikes/negatives on the Energy Dashboard).
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
     def __init__(self, client: HassAndelEnergi):
         self._attr_name = "Andel Energi Statistic"
         self._attr_unique_id = f"{client.metering_point}-statistic"
         self._client = client
-        self._attr_native_value = 0
+        self._attr_native_value = None
 
     async def async_will_remove_from_hass(self) -> None:
         await get_instance(self.hass).async_clear_statistics([self.entity_id])
@@ -228,7 +230,6 @@ class AndelEnergiStatistic(SensorEntity):
 
         last_stat = await self._get_last_stat(self.hass)
         await self._insert_statistics(readings, last_stat)
-        self._last_update = now
 
     async def _insert_statistics(self, readings: list[dict], last_stat):
         total = last_stat["sum"] if last_stat else 0
@@ -260,7 +261,6 @@ class AndelEnergiStatistic(SensorEntity):
 
         if statistics:
             async_import_statistics(self.hass, metadata, statistics)
-            self._attr_native_value = total
             _LOGGER.debug(
                 "Imported %d new hourly statistics (last: %s, sum: %.3f)",
                 len(statistics),
