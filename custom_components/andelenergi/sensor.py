@@ -8,6 +8,7 @@ from homeassistant.components.recorder.statistics import (
     DOMAIN as RECORDER_DOMAIN,
     async_import_statistics,
     get_last_statistics,
+    statistics_during_period,
 )
 from homeassistant.components.recorder.models import (
     StatisticData,
@@ -194,11 +195,18 @@ class AndelEnergiGreenEnergy(SensorEntity):
 
 
 class AndelEnergiStatistic(SensorEntity):
-    """Imports hourly consumption as long-term statistics for the Energy Dashboard."""
+    """Imports hourly consumption as long-term statistics for the Energy Dashboard.
+
+    Handles late-arriving data (up to BACKFILL_DAYS) by re-importing a rolling
+    window of recent statistics on every update. async_import_statistics upserts,
+    so re-importing existing data points is safe.
+    """
 
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
+
+    BACKFILL_DAYS = 7
 
     def __init__(self, client: HassAndelEnergi):
         self._attr_name = "Andel Energi Statistic"
@@ -215,16 +223,6 @@ class AndelEnergiStatistic(SensorEntity):
         if self._last_update and now - self._last_update < MIN_TIME_BETWEEN_UPDATES:
             return
 
-        last_stat = await self._get_last_stat(self.hass)
-
-        if last_stat is not None:
-            last_start = datetime.fromtimestamp(
-                last_stat["start"], tz=timezone.utc
-            )
-            if now - last_start < timedelta(days=1):
-                return
-
-        # Ensure consumption data is fresh (uses cached data from update_consumption)
         await self.hass.async_add_executor_job(self._client.update_consumption)
 
         readings = self._client.hourly_readings
@@ -232,23 +230,26 @@ class AndelEnergiStatistic(SensorEntity):
             _LOGGER.debug("No hourly data available from Andel Energi")
             return
 
-        await self._insert_statistics(readings, last_stat)
+        await self._insert_statistics(readings)
         self._last_update = now
 
-    async def _insert_statistics(self, readings: list[dict], last_stat):
+    async def _insert_statistics(self, readings: list[dict]):
+        # Find the cumulative sum just before our backfill window so we can
+        # rebuild the running total from that point forward.
+        backfill_start = dt_util.utcnow() - timedelta(days=self.BACKFILL_DAYS)
+        baseline_sum = await self._get_sum_at(self.hass, backfill_start)
+
         statistics: list[StatisticData] = []
-        total = last_stat["sum"] if last_stat else 0
+        total = baseline_sum
 
-        last_start_ts = last_stat["start"] if last_stat else 0
-
-        for reading in readings:
+        for reading in sorted(readings, key=lambda r: r["date_time"]):
             value = reading.get("value")
             if value is None:
                 continue
 
             start = datetime.fromisoformat(reading["date_time"])
-            # Only include readings newer than what we've already imported
-            if start.timestamp() <= last_start_ts:
+            # Only process readings within the backfill window
+            if start < backfill_start:
                 continue
 
             total += value
@@ -269,11 +270,37 @@ class AndelEnergiStatistic(SensorEntity):
         else:
             _LOGGER.debug("No new statistics to import from Andel Energi")
 
-    async def _get_last_stat(self, hass: HomeAssistant):
+    async def _get_sum_at(self, hass: HomeAssistant, at: datetime) -> float:
+        """Get the cumulative sum just before 'at', or 0 if no stats exist."""
+        # Get the last stat recorded before the backfill window
         last_stats = await get_instance(hass).async_add_executor_job(
             get_last_statistics, hass, 1, self.entity_id, True, {"sum"}
         )
 
-        if self.entity_id in last_stats and len(last_stats[self.entity_id]) > 0:
-            return last_stats[self.entity_id][0]
-        return None
+        if self.entity_id not in last_stats or not last_stats[self.entity_id]:
+            return 0
+
+        # If the most recent stat is before the backfill window, use its sum
+        last = last_stats[self.entity_id][0]
+        last_start = datetime.fromtimestamp(last["start"], tz=timezone.utc)
+        if last_start < at:
+            return last["sum"]
+
+        # Otherwise, query for stats during a window ending at backfill_start
+        # to find the baseline sum
+        period_start = at - timedelta(days=365)
+        period_stats = await get_instance(hass).async_add_executor_job(
+            statistics_during_period,
+            hass,
+            period_start,
+            at,
+            {self.entity_id},
+            "hour",
+            None,
+            {"sum"},
+        )
+
+        if self.entity_id in period_stats and period_stats[self.entity_id]:
+            return period_stats[self.entity_id][-1]["sum"]
+
+        return 0
